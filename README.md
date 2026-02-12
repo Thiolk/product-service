@@ -8,7 +8,6 @@ REST API for order management.
 ## Prerequisites
 - Docker
 
-
 ## Build (Docker)
 
 From the repo root:
@@ -25,7 +24,7 @@ host 5000 → container 3001
 
 ### Run Command
 ```bash
-docker run --rm -p 5000:3001 product-service:local
+docker run -e PORT=3001 -p 5000:3001 product-service:local
 ```
 
 ### Verify
