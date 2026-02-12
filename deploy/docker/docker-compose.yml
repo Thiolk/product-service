@@ -1,5 +1,6 @@
 services:
   product-service:
+    image: product-service:local
     container_name: product-service
     build:
       context: ../..
