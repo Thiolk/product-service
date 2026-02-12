@@ -1,0 +1,12 @@
+services:
+  product-service:
+    container_name: product-service
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: ${PRODUCT_PORT_CONTAINER}
+    ports:
+      - "${PRODUCT_PORT_HOST}:${PRODUCT_PORT_CONTAINER}"
+    restart: unless-stopped

@@ -1,40 +1,46 @@
-# Order Service
+# Product Service
 
-REST API for order management.
+REST API for product management.
 
 ## Version
 - Current release: 1.0.0
 
 ## Prerequisites
-- Docker
+- Docker + Docker Compose
 
-## Build (Docker)
+## Docker Files Location
+Docker-related files are located in:
+- `deploy/docker/`
 
+## Quick Start (Docker Compose)
+
+### 1) Create your local environment file
 From the repo root:
-
 ```bash
-docker build -t product-service:local -f Dockerfile .
+cp deploy/docker/.env.example deploy/docker/.env
 ```
 
-## Run (Docker)
-
-### Port mapping
-The Order Service listens on port 3001 inside the container (per startup logs). To access it on your laptop at localhost:5000, map:
-host 5000 → container 3001
-
-### Run Command
+### 2) Build and run
+From the repo root:
 ```bash
-docker run -e PORT=3001 -p 5000:3001 product-service:local
+docker compose -f deploy/docker/docker-compose.yml --env-file deploy/docker/.env up -d --build
+docker ps
 ```
 
-### Verify
+### 3) Verify
 ```bash
 curl -i http://localhost:5000/health
 ```
 
-## Configuration (Env Variables)
-you may configure:
+### 4) Stop
+```bash
+docker compose -f deploy/docker/docker-compose.yml --env-file deploy/docker/.env down
+```
+
+## Configuration (Environment Variables)
+You may configure:
 - PORT (default: 3001)
+If/when database integration is enabled, you may also configure:
 - DB_HOST
 - DB_PORT (default: 5432)
 - DB_NAME
