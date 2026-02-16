@@ -57,7 +57,7 @@ describe("Product Service - Unit Tests", () => {
 
     expect(mockQuery).toHaveBeenCalledWith(
       "SELECT * FROM products WHERE id = $1",
-      ["10"]
+      ["10"],
     );
   });
 
@@ -71,7 +71,7 @@ describe("Product Service - Unit Tests", () => {
 
     expect(mockQuery).toHaveBeenCalledWith(
       "SELECT * FROM products WHERE id = $1",
-      ["999"]
+      ["999"],
     );
   });
 
@@ -94,7 +94,7 @@ describe("Product Service - Unit Tests", () => {
 
     expect(mockQuery).toHaveBeenCalledWith(
       "INSERT INTO products (name, price, description) VALUES ($1, $2, $3) RETURNING *",
-      ["Chips", 4.5, "snack"]
+      ["Chips", 4.5, "snack"],
     );
   });
 });
