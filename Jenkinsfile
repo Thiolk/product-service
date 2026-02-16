@@ -74,7 +74,6 @@ pipeline {
       }
       steps {
         withSonarQubeEnv('SonarQubeServer') {
-          // Create this credential in Jenkins: Secret text id = product-service-sonar
           withCredentials([string(credentialsId: 'product-service-sonar', variable: 'SONAR_TOKEN')]) {
             sh '''
               set -eu
