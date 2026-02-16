@@ -76,18 +76,14 @@ pipeline {
         withSonarQubeEnv('SonarQubeServer') {
           withCredentials([string(credentialsId: 'product-service-sonar', variable: 'SONAR_TOKEN')]) {
             sh '''
-              set -eu
-              mkdir -p .scannerwork
-
-              docker run --rm \
+            set -eu
+            mkdir -p .scannerwork
+            docker run --rm \
                 -e SONAR_HOST_URL="http://host.docker.internal:9005" \
-                -e SONAR_TOKEN="$SONAR_TOKEN" \
+                -e SONAR_TOKEN="$SONAR_AUTH_TOKEN" \
                 -v "$WORKSPACE:/usr/src" \
                 -w /usr/src \
                 sonarsource/sonar-scanner-cli:latest \
-                -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
-                -Dsonar.sources=src \
-                -Dsonar.tests=tests \
                 -Dsonar.userHome=/usr/src \
                 -Dsonar.working.directory=.scannerwork
             '''
@@ -98,9 +94,9 @@ pipeline {
 
     stage('Quality Gate') {
       steps {
-        timeout(time: 5, unit: 'MINUTES') {
-          waitForQualityGate abortPipeline: true
-        }
+          timeout(time: 5, unit: 'MINUTES') {
+              waitForQualityGate abortPipeline: true
+          }
       }
     }
 
