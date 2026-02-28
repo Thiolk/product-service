@@ -25,11 +25,15 @@ pipeline {
           env.RELEASE_TAG = tagName ?: ""
 
           if (tagName) {
-            env.TARGET_ENV = "prod"        // manual trigger via pushing a git tag
+            env.TARGET_ENV = "prod"
+          } else if (branch == "main") {
+            env.TARGET_ENV = "staging"          // promotion/deploy-to-staging happens here
           } else if (branch == "develop") {
             env.TARGET_ENV = "dev"
           } else if (branch.startsWith("release/")) {
-            env.TARGET_ENV = "staging"
+            env.TARGET_ENV = "rc"               // release candidate validation only
+          } else {
+            env.TARGET_ENV = "build"            // feature/* or other branches
           }
 
           echo "BRANCH_NAME: ${branch}"
@@ -40,6 +44,7 @@ pipeline {
     }
 
     stage('Build (Lint/Format)') {
+      when { expression { env.TARGET_ENV == "build" } }
       steps {
         sh '''
           set -eux
@@ -60,6 +65,7 @@ pipeline {
     }
 
     stage('Test (Integration)') {
+      when { expression { env.TARGET_ENV in ["build", "rc"] } }
       steps {
         sh '''
           set -eux
@@ -69,6 +75,7 @@ pipeline {
     }
 
     stage('Static Analysis (SonarQube)') {
+      when { expression { env.TARGET_ENV == "build" } }
       environment {
         SONAR_PROJECT_KEY = 'product-service'
       }
@@ -91,10 +98,11 @@ pipeline {
     }
 
     stage('Quality Gate') {
+      when { expression { env.TARGET_ENV == "build" } }
       steps {
-          timeout(time: 5, unit: 'MINUTES') {
-              waitForQualityGate abortPipeline: true
-          }
+        timeout(time: 5, unit: 'MINUTES') {
+          waitForQualityGate abortPipeline: true
+        }
       }
     }
 
@@ -110,8 +118,8 @@ pipeline {
             }
             env.IMAGE_TAG = releaseTag
           } else {
-            echo "Setting image tag to build number"
-            env.IMAGE_TAG = env.BUILD_NUMBER.toString()
+            echo "setting image tag to build number"
+            env.IMAGE_TAG = "${env.TARGET_ENV}-${env.BUILD_NUMBER}"
           }
 
           echo "Resolved image tag strategy:"
@@ -181,12 +189,12 @@ pipeline {
     }
 
     stage('Deploy (Staging)') {
-      when { expression { return env.TARGET_ENV == "staging" } }
+      when { expression { env.TARGET_ENV == "staging" } }
       steps {
         sh '''
           set -eux
           echo "Deploy stage placeholder: will be implemented in Kubernetes phase."
-          echo "Deploying to STAGING from release branch"
+          echo "Deploying to STAGING from main branch (promotion step)"
           echo "Image: ${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
         '''
       }
@@ -197,11 +205,17 @@ pipeline {
       steps {
         sh '''
           set -eux
-          git fetch origin main --tags
-          if git merge-base --is-ancestor HEAD origin/main; then
-            echo "OK: Tagged commit is on main."
+
+          echo "HEAD:"
+          git show -s --oneline --decorate HEAD
+
+          echo "Tags pointing at HEAD:"
+          git tag --points-at HEAD
+
+          if git tag --points-at HEAD | grep -qx "${TAG_NAME}"; then
+            echo "OK: HEAD is correctly tagged with ${TAG_NAME}"
           else
-            echo "BLOCK: Tagged commit is NOT on main. Merge release into main first."
+            echo "BLOCK: HEAD is not tagged with ${TAG_NAME}"
             exit 1
           fi
         '''
