@@ -22,7 +22,7 @@ environment-aware deployments).
 
 ## Version
 
-- Current release: 1.0.0
+- Current release: 2.0.0
 
 ---
 
