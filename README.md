@@ -14,15 +14,16 @@ system:
 - ecommerce-frontend -- React frontend served via Nginx
 - database -- PostgreSQL
 
-Each service is versioned, containerized, and built independently.\
-CI/CD is implemented via Jenkins (multibranch pipeline with
-environment-aware deployments).
+Each service is versioned, containerized, built independently, and
+deployed via Kubernetes.\
+CI/CD is implemented using a Jenkins Multibranch Pipeline with
+environment-aware deployments.
 
 ---
 
 ## Version
 
-- Current release: 2.0.0
+- Current release: 2.1.0
 
 ---
 
@@ -45,6 +46,9 @@ Production releases are triggered via Git tags (e.g., v2.0.0).
 - Docker
 - Docker Compose
 - Node.js (for local development)
+- Kubernetes (Minikube for local cluster testing)
+- kubectl
+- Jenkins (for CI/CD)
 
 ---
 
@@ -52,7 +56,7 @@ Production releases are triggered via Git tags (e.g., v2.0.0).
 
 Docker-related files are located in:
 
-- `deploy/docker/`
+deploy/docker/
 
 ---
 
@@ -60,15 +64,11 @@ Docker-related files are located in:
 
 ### 1) Create your local environment file
 
-From the repo root:
-
 ```bash
 cp deploy/docker/.env.example deploy/docker/.env
 ```
 
 ### 2) Build and run
-
-From the repo root:
 
 ```bash
 docker compose -f deploy/docker/docker-compose.yml --env-file deploy/docker/.env up -d --build
@@ -123,35 +123,69 @@ npm run test:integration
 
 ---
 
-## API Endpoints
+## Kubernetes Deployment
 
-### Health Check
+Kubernetes manifests are structured using Kustomize.
 
-GET /health
+k8s/product-service/\
+base/\
+overlays/\
+dev/\
+staging/\
+prod/
 
-Returns 200 OK if service is running.
+### Namespaces
 
-### Products
+- dev
+- staging
+- prod
 
-POST /products\
-GET /products/:id
+Create namespaces:
 
-(Additional routes are defined in `/src/routes`.)
+```bash
+kubectl create namespace dev
+kubectl create namespace staging
+kubectl create namespace prod
+```
+
+### Deployment Strategy
+
+- RollingUpdate
+- readinessProbe and livenessProbe on /health
+- Resource requests and limits configured
+- Replica count:
+  - dev: 1
+  - staging: 2
+  - prod: 2
+
+### Apply Overlay (Example: Dev)
+
+```bash
+kubectl kustomize k8s/product-service/overlays/dev | kubectl -n dev apply -f -
+```
+
+### Smoke Test (Ingress via Port Forward)
+
+```bash
+kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 18080:80
+curl -H "Host: product-dev.local" http://127.0.0.1:18080/health
+```
 
 ---
 
-## CI/CD Pipeline
+## CI/CD Pipeline (Jenkins)
 
-This service uses a Jenkins Multibranch Pipeline with Git Flow.
+This service uses a Jenkins Multibranch Pipeline with environment-aware
+deployment.
 
 ### Branch Strategy
 
 - feature/\* → Validation only (lint, tests, SonarQube, Docker build,
   security scan)
-- develop → DEV environment image push
-- release/\* → Staging candidate validation
-- main → Staging promotion
-- git tag (vX.Y.Z) → Production release (manual approval required)
+- develop → Deploy to DEV namespace
+- release/\* → Staging candidate validation only
+- main → Deploy to STAGING namespace
+- git tag (vX.Y.Z) → Deploy to PROD (manual approval required)
 
 ### Image Tagging Strategy
 
@@ -160,25 +194,55 @@ This service uses a Jenkins Multibranch Pipeline with Git Flow.
 - vX.Y.Z (production)
 - latest (production only)
 
+### Deployment Flow
+
+1.  Build container image
+2.  Run Docker Scout security scan (notify-only policy)
+3.  Push image to Docker Hub
+4.  Apply Kubernetes overlay for environment
+5.  Inject image tag via kubectl set image
+6.  Wait for rollout
+7.  Run smoke test against /health endpoint
+
 ---
 
 ## Testing Strategy
 
-- Unit tests: validate business logic in isolation
-- Integration tests: validate API layer and route behavior
-- Smoke test: container boot validation in CI pipeline
+- Unit tests: validate business logic
+- Integration tests: validate API routes
+- Smoke tests: validate container boot and K8s deployment health
 
 All tests must pass before image push.
 
 ---
 
-## Configuration (Environment Variables)
+## Security Scanning (Docker Scout)
 
-You may configure:
+The container image is scanned for known vulnerabilities using Docker
+Scout.
+
+Policy:
+
+- Notify-only
+- Critical and High severity issues reported
+- Pipeline does NOT fail for upstream base image vulnerabilities
+
+We mitigate risk by:
+
+- Using official base images
+- Keeping runtime image minimal
+- Updating dependencies regularly
+- Rescanning after rebuilds
+
+---
+
+## Environment Variables
+
+Supported variables:
 
 - PORT (default: 3000)
 
-If/when database integration is enabled, you may also configure:
+If database integration is enabled:
 
 - DB_HOST
 - DB_PORT (default: 5432)
@@ -188,46 +252,9 @@ If/when database integration is enabled, you may also configure:
 
 ---
 
-## Security Scanning (Docker Scout)
+## Maintainer Notes
 
-We scan the built product service container image for known CVEs using
-Docker Scout.
-
-From the repo root:
-
-### Scan
-
-```bash
-chmod +x scripts/security-docker-scout-scan.sh
-./scripts/security-docker-scout-scan.sh
-```
-
-### Policy / Rationale
-
-The Product Service image is built on the official `node` base image
-(Alpine variant).
-
-Vulnerabilities may be reported in:
-
-- the upstream base image packages (OS-level dependencies), and/or
-- npm dependencies included in the application image (e.g., `tar`,
-  `glob`, `cross-spawn`).
-
-We mitigate this by:
-
-- using an appropriate official base image tag and updating it when
-  patches are released
-- keeping the runtime image minimal (production dependencies only via
-  `npm ci --omit=dev`)
-- addressing dependency-level vulnerabilities by updating npm packages
-  when fixes are available and rebuilding the image to verify
-  improvements
-- rescanning regularly to track changes over time
-
-### CI Integration
-
-Docker Scout scanning is also executed in the Jenkins pipeline.
-
-- Policy: Notify-only
-- Critical / High severity findings are reported
-- Pipeline does NOT fail on upstream base image vulnerabilities
+- Kubernetes overlays control image tags per environment.
+- Jenkins injects the build-specific image tag during deployment.
+- Production deploys require manual approval.
+- Ingress host-based routing is used per environment.
