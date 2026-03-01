@@ -1,1 +1,7 @@
-[{ "op": "replace", "path": "/spec/rules/0/host", "value": "product-prod.local" }]
+[
+  {
+    "op": "replace",
+    "path": "/spec/rules/0/host",
+    "value": "product-prod.local"
+  }
+]
