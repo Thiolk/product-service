@@ -7,6 +7,8 @@ pipeline {
     DOCKERHUB_USER   = "thiolengkiat413"
     IMAGE_NAME       = "product-service"
     DOCKERFILE_PATH  = "deploy/docker/Dockerfile"
+
+    K8S_DIR = "k8s/product-service/overlays"
   }
 
   stages {
@@ -19,7 +21,6 @@ pipeline {
         script {
           env.IMAGE_TAG   = ""
           env.TARGET_ENV  = "build"
-
           def branch  = env.BRANCH_NAME ?: ""
           def tagName = env.TAG_NAME?.trim()
           env.RELEASE_TAG = tagName ?: ""
@@ -27,7 +28,7 @@ pipeline {
           if (tagName) {
             env.TARGET_ENV = "prod"
           } else if (branch == "main") {
-            env.TARGET_ENV = "staging"          // promotion/deploy-to-staging happens here
+            env.TARGET_ENV = "staging"          // deploy-to-staging happens here
           } else if (branch == "develop") {
             env.TARGET_ENV = "dev"
           } else if (branch.startsWith("release/")) {
@@ -35,11 +36,20 @@ pipeline {
           } else {
             env.TARGET_ENV = "build"            // feature/* or other branches
           }
-
+          
           echo "BRANCH_NAME: ${branch}"
           echo "TAG_NAME: ${tagName ?: 'none'}"
           echo "TARGET_ENV: ${env.TARGET_ENV}"
         }
+      }
+    }
+
+    stage('Install Deps') {
+      steps {
+        sh '''
+          set -eux
+          npm ci
+        '''
       }
     }
 
@@ -48,7 +58,6 @@ pipeline {
       steps {
         sh '''
           set -eux
-          npm ci
           npm run lint
           npm run format:check
         '''
@@ -82,16 +91,14 @@ pipeline {
       steps {
         withSonarQubeEnv('SonarQubeServer') {
           sh '''
-          set -eu
-          mkdir -p .scannerwork
-          docker run --rm \
-              -e SONAR_HOST_URL="http://host.docker.internal:9005" \
-              -e SONAR_TOKEN="$SONAR_AUTH_TOKEN" \
-              -v "$WORKSPACE:/usr/src" \
-              -w /usr/src \
-              sonarsource/sonar-scanner-cli:latest \
-              -Dsonar.userHome=/usr/src \
-              -Dsonar.working.directory=.scannerwork
+            set -eux
+            mkdir -p .scannerwork
+
+            sonar-scanner \
+              -Dsonar.projectKey="${SONAR_PROJECT_KEY}" \
+              -Dsonar.host.url="${SONAR_HOST_URL}" \
+              -Dsonar.token="${SONAR_AUTH_TOKEN}" \
+              -Dsonar.working.directory=".scannerwork"
           '''
         }
       }
@@ -112,13 +119,11 @@ pipeline {
           def releaseTag = (env.RELEASE_TAG ?: "").trim()
 
           if (env.TARGET_ENV == "prod") {
-            echo "Resolving production image tag"
             if (!releaseTag) {
               error("Prod build requires a Git tag (RELEASE_TAG).")
             }
             env.IMAGE_TAG = releaseTag
           } else {
-            echo "setting image tag to build number"
             env.IMAGE_TAG = "${env.TARGET_ENV}-${env.BUILD_NUMBER}"
           }
 
@@ -159,8 +164,9 @@ pipeline {
       }
     }
 
+    // IMPORTANT: Match order-service gating (no pushes for rc/build)
     stage('Container Push') {
-      when { expression { return env.TARGET_ENV != "build" } }
+      when { expression { return env.TARGET_ENV in ["dev","staging","prod"] } }
       steps {
         withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
           sh '''
@@ -179,24 +185,87 @@ pipeline {
     stage('Deploy (Dev)') {
       when { expression { return env.TARGET_ENV == "dev" } }
       steps {
-        sh '''
-          set -eux
-          echo "Deploy stage placeholder: will be implemented in Kubernetes phase."
-          echo "Deploying to DEV from develop branch"
-          echo "Image: ${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
-        '''
+        withCredentials([file(credentialsId: 'kubeconfig-minikube', variable: 'KUBECONFIG_FILE')]) {
+          sh '''
+            set -eux
+            export KUBECONFIG="$KUBECONFIG_FILE"
+
+            NS=dev
+            HOST="product-dev.local"
+            OVERLAY="${K8S_DIR}/dev"
+            IMAGE="${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+            kubectl kustomize "$OVERLAY" | kubectl -n "$NS" apply -f -
+            kubectl -n "$NS" set image deployment/product-service product-service="$IMAGE"
+            kubectl -n "$NS" rollout status deployment/product-service --timeout=180s
+
+            # --- Smoke test via ingress using kubectl port-forward ---
+            kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 18080:80 >/tmp/ingress-pf.log 2>&1 &
+            PF_PID=$!
+            trap 'kill $PF_PID >/dev/null 2>&1 || true' EXIT INT TERM
+
+            i=1
+            while [ $i -le 30 ]; do
+              code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/" || true)
+              if [ "$code" != "000" ]; then break; fi
+              sleep 1
+              i=$((i+1))
+            done
+
+            code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/" || true)
+            if [ "$code" = "000" ]; then
+              echo "ERROR: ingress port-forward not reachable"
+              echo "--- /tmp/ingress-pf.log ---"
+              cat /tmp/ingress-pf.log || true
+              exit 1
+            fi
+
+            curl -fsS -i -H "Host: $HOST" "http://127.0.0.1:18080/health"
+          '''
+        }
       }
     }
 
     stage('Deploy (Staging)') {
-      when { expression { env.TARGET_ENV == "staging" } }
+      when { expression { return env.TARGET_ENV == "staging" } }
       steps {
-        sh '''
-          set -eux
-          echo "Deploy stage placeholder: will be implemented in Kubernetes phase."
-          echo "Deploying to STAGING from main branch (promotion step)"
-          echo "Image: ${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
-        '''
+        withCredentials([file(credentialsId: 'kubeconfig-minikube', variable: 'KUBECONFIG_FILE')]) {
+          sh '''
+            set -eux
+            export KUBECONFIG="$KUBECONFIG_FILE"
+
+            NS=staging
+            HOST="product-staging.local"
+            OVERLAY="${K8S_DIR}/staging"
+            IMAGE="${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+            kubectl kustomize "$OVERLAY" | kubectl -n "$NS" apply -f -
+            kubectl -n "$NS" set image deployment/product-service product-service="$IMAGE"
+            kubectl -n "$NS" rollout status deployment/product-service --timeout=180s
+
+            kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 18080:80 >/tmp/ingress-pf.log 2>&1 &
+            PF_PID=$!
+            trap 'kill $PF_PID >/dev/null 2>&1 || true' EXIT INT TERM
+
+            i=1
+            while [ $i -le 30 ]; do
+              code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/" || true)
+              if [ "$code" != "000" ]; then break; fi
+              sleep 1
+              i=$((i+1))
+            done
+
+            code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/" || true)
+            if [ "$code" = "000" ]; then
+              echo "ERROR: ingress port-forward not reachable"
+              echo "--- /tmp/ingress-pf.log ---"
+              cat /tmp/ingress-pf.log || true
+              exit 1
+            fi
+
+            curl -fsS -i -H "Host: $HOST" "http://127.0.0.1:18080/health"
+          '''
+        }
       }
     }
 
@@ -205,10 +274,8 @@ pipeline {
       steps {
         sh '''
           set -eux
-
           echo "HEAD:"
           git show -s --oneline --decorate HEAD
-
           echo "Tags pointing at HEAD:"
           git tag --points-at HEAD
 
@@ -236,23 +303,132 @@ pipeline {
     stage('Deploy (Prod)') {
       when { expression { return env.TARGET_ENV == "prod" } }
       steps {
-        sh '''
-          set -eux
-          echo "Deploy stage placeholder: will be implemented in Kubernetes phase."
-          echo "Deploying to PROD from main branch (manual trigger via git tag)"
-          echo "Release tag trigger: ${RELEASE_TAG}"
-          echo "Image: ${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
-          echo "Also pushed: ${DOCKERHUB_USER}/${IMAGE_NAME}:latest"
-        '''
+        withCredentials([file(credentialsId: 'kubeconfig-minikube', variable: 'KUBECONFIG_FILE')]) {
+          sh '''
+            set -eux
+            export KUBECONFIG="$KUBECONFIG_FILE"
+
+            NS=prod
+            HOST="product-prod.local"
+            OVERLAY="${K8S_DIR}/prod"
+            IMAGE="${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+            kubectl kustomize "$OVERLAY" | kubectl -n "$NS" apply -f -
+            kubectl -n "$NS" set image deployment/product-service product-service="$IMAGE"
+            kubectl -n "$NS" rollout status deployment/product-service --timeout=180s
+
+            kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 18080:80 >/tmp/ingress-pf.log 2>&1 &
+            PF_PID=$!
+            trap 'kill $PF_PID >/dev/null 2>&1 || true' EXIT INT TERM
+
+            i=1
+            while [ $i -le 30 ]; do
+              code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/" || true)
+              if [ "$code" != "000" ]; then break; fi
+              sleep 1
+              i=$((i+1))
+            done
+
+            code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/" || true)
+            if [ "$code" = "000" ]; then
+              echo "ERROR: ingress port-forward not reachable"
+              echo "--- /tmp/ingress-pf.log ---"
+              cat /tmp/ingress-pf.log || true
+              exit 1
+            fi
+
+            curl -fsS -i -H "Host: $HOST" "http://127.0.0.1:18080/health"
+          '''
+        }
       }
     }
   }
 
   post {
     always {
+      script {
+        def didDeploy = (env.TARGET_ENV in ['dev', 'staging', 'prod'])
+
+        sh '''
+          set +e
+          echo "========== POST (always) =========="
+          echo "JOB:        ${JOB_NAME}"
+          echo "BUILD:      ${BUILD_NUMBER}"
+          echo "BRANCH:     ${BRANCH_NAME:-none}"
+          echo "TAG:        ${TAG_NAME:-none}"
+          echo "TARGET_ENV: ${TARGET_ENV:-unknown}"
+          echo "IMAGE:      ${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG:-none}"
+          echo "WORKSPACE:  ${WORKSPACE}"
+          echo "==================================="
+
+          mkdir -p artifacts || true
+          if [ -f /tmp/ingress-pf.log ]; then
+            echo ""
+            echo "---- tail /tmp/ingress-pf.log ----"
+            tail -n 120 /tmp/ingress-pf.log || true
+            cp -f /tmp/ingress-pf.log artifacts/ingress-pf.log || true
+          fi
+
+          if [ -d .scannerwork ]; then
+            tar -czf artifacts/scannerwork.tgz .scannerwork 2>/dev/null || true
+          fi
+        '''
+
+        if (didDeploy) {
+          withCredentials([file(credentialsId: 'kubeconfig-minikube', variable: 'KUBECONFIG_FILE')]) {
+            sh '''
+              set +e
+              export KUBECONFIG="$KUBECONFIG_FILE"
+              NS="${TARGET_ENV}"
+
+              echo ""
+              echo "========== K8S DEBUG (ns=$NS) =========="
+
+              echo "-- Namespaces --"
+              kubectl get ns || true
+
+              echo ""
+              echo "-- Workload snapshot --"
+              kubectl -n "$NS" get deploy,rs,po,svc,ingress -o wide || true
+
+              echo ""
+              echo "-- Describe key resources (product-service) --"
+              kubectl -n "$NS" describe deployment product-service || true
+              kubectl -n "$NS" describe svc product-service || true
+              kubectl -n "$NS" describe ingress product-service || true
+
+              echo ""
+              echo "-- Pod logs (last 200 lines each) --"
+              for p in $(kubectl -n "$NS" get pods -o name 2>/dev/null | sed 's#pod/##'); do
+                echo ""
+                echo "### logs: $p"
+                kubectl -n "$NS" logs "$p" --tail=200 || true
+              done
+
+              echo ""
+              echo "-- Recent events (last 60) --"
+              kubectl -n "$NS" get events --sort-by=.lastTimestamp | tail -n 60 || true
+
+              echo "========================================"
+            '''
+          }
+        }
+      }
+
+      archiveArtifacts artifacts: 'artifacts/**', allowEmptyArchive: true
+    }
+
+    failure {
       sh '''
         set +e
-        echo "post actions will be set later"
+        echo "Build FAILED. Check console logs + archived artifacts/ for ingress log and scannerwork."
+      '''
+    }
+
+    cleanup {
+      sh '''
+        set +e
+        rm -rf artifacts || true
       '''
     }
   }
