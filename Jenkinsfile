@@ -9,6 +9,8 @@ pipeline {
     DOCKERFILE_PATH  = "deploy/docker/Dockerfile"
 
     K8S_DIR = "k8s/product-service/overlays"
+    INFRA_JOB = "terraform-infra"
+    INFRA_OUTPUTS_GENERIC = "infra-outputs.json"
   }
 
   stages {
@@ -36,7 +38,7 @@ pipeline {
           } else {
             env.TARGET_ENV = "build"            // feature/* or other branches
           }
-          
+
           echo "BRANCH_NAME: ${branch}"
           echo "TAG_NAME: ${tagName ?: 'none'}"
           echo "TARGET_ENV: ${env.TARGET_ENV}"
@@ -164,7 +166,6 @@ pipeline {
       }
     }
 
-    // IMPORTANT: Match order-service gating (no pushes for rc/build)
     stage('Container Push') {
       when { expression { return env.TARGET_ENV in ["dev","staging","prod"] } }
       steps {
@@ -182,6 +183,43 @@ pipeline {
       }
     }
 
+    stage('Fetch Infra Outputs (Terraform)') {
+      when { expression { return env.TARGET_ENV in ["dev","staging","prod"] } }
+      steps {
+        script {
+          def envFile = "infra-outputs-${env.TARGET_ENV}.json"
+          sh 'rm -f infra-outputs*.json || true'
+
+          try {
+            copyArtifacts(
+              projectName: env.INFRA_JOB,
+              selector: lastSuccessful(),
+              filter: "${envFile},${env.INFRA_OUTPUTS_GENERIC}",
+              fingerprintArtifacts: true,
+              optional: false
+            )
+          } catch (err) {
+            error("""
+                  Could not copy artifacts from infra job '${env.INFRA_JOB}'.
+                  - Ensure the job exists and archives infra-outputs.json (and preferably infra-outputs-${env.TARGET_ENV}.json).
+                  - Ensure the "Copy Artifact" plugin is installed.
+                  Original error: ${err}
+                  """)
+          }
+
+          sh """
+            set -eux
+            if [ -f "${envFile}" ]; then
+              cp "${envFile}" infra-outputs.json
+            fi
+            test -f infra-outputs.json
+            echo "Using infra outputs:"
+            ls -la infra-outputs.json
+          """
+        }
+      }
+    }
+
     stage('Deploy (Dev)') {
       when { expression { return env.TARGET_ENV == "dev" } }
       steps {
@@ -189,6 +227,13 @@ pipeline {
           sh '''
             set -eux
             export KUBECONFIG="$KUBECONFIG_FILE"
+
+            # Load ingress/controller details from Terraform outputs (infra-outputs.json)
+            chmod +x deploy/ci/load-infra-outputs.sh deploy/ci/smoke-test-ingress.sh
+            ./deploy/ci/load-infra-outputs.sh
+
+            # Use kube context from outputs (usually "minikube")
+            kubectl config use-context "$KUBE_CONTEXT"
 
             NS=dev
             HOST="product-dev.local"
@@ -199,28 +244,8 @@ pipeline {
             kubectl -n "$NS" set image deployment/product-service product-service="$IMAGE"
             kubectl -n "$NS" rollout status deployment/product-service --timeout=180s
 
-            # --- Smoke test via ingress using kubectl port-forward ---
-            kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 18080:80 >/tmp/ingress-pf.log 2>&1 &
-            PF_PID=$!
-            trap 'kill $PF_PID >/dev/null 2>&1 || true' EXIT INT TERM
-
-            i=1
-            while [ $i -le 30 ]; do
-              code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/" || true)
-              if [ "$code" != "000" ]; then break; fi
-              sleep 1
-              i=$((i+1))
-            done
-
-            code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/" || true)
-            if [ "$code" = "000" ]; then
-              echo "ERROR: ingress port-forward not reachable"
-              echo "--- /tmp/ingress-pf.log ---"
-              cat /tmp/ingress-pf.log || true
-              exit 1
-            fi
-
-            curl -fsS -i -H "Host: $HOST" "http://127.0.0.1:18080/health"
+            # Smoke test (reuses your existing port-forward logic, now parameterized)
+            ./deploy/ci/smoke-test-ingress.sh "$HOST" "/health"
           '''
         }
       }
@@ -234,6 +259,10 @@ pipeline {
             set -eux
             export KUBECONFIG="$KUBECONFIG_FILE"
 
+            chmod +x deploy/ci/load-infra-outputs.sh deploy/ci/smoke-test-ingress.sh
+            ./deploy/ci/load-infra-outputs.sh
+            kubectl config use-context "$KUBE_CONTEXT"
+
             NS=staging
             HOST="product-staging.local"
             OVERLAY="${K8S_DIR}/staging"
@@ -243,27 +272,7 @@ pipeline {
             kubectl -n "$NS" set image deployment/product-service product-service="$IMAGE"
             kubectl -n "$NS" rollout status deployment/product-service --timeout=180s
 
-            kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 18080:80 >/tmp/ingress-pf.log 2>&1 &
-            PF_PID=$!
-            trap 'kill $PF_PID >/dev/null 2>&1 || true' EXIT INT TERM
-
-            i=1
-            while [ $i -le 30 ]; do
-              code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/" || true)
-              if [ "$code" != "000" ]; then break; fi
-              sleep 1
-              i=$((i+1))
-            done
-
-            code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/" || true)
-            if [ "$code" = "000" ]; then
-              echo "ERROR: ingress port-forward not reachable"
-              echo "--- /tmp/ingress-pf.log ---"
-              cat /tmp/ingress-pf.log || true
-              exit 1
-            fi
-
-            curl -fsS -i -H "Host: $HOST" "http://127.0.0.1:18080/health"
+            ./deploy/ci/smoke-test-ingress.sh "$HOST" "/health"
           '''
         }
       }
@@ -308,6 +317,10 @@ pipeline {
             set -eux
             export KUBECONFIG="$KUBECONFIG_FILE"
 
+            chmod +x deploy/ci/load-infra-outputs.sh deploy/ci/smoke-test-ingress.sh
+            ./deploy/ci/load-infra-outputs.sh
+            kubectl config use-context "$KUBE_CONTEXT"
+
             NS=prod
             HOST="product-prod.local"
             OVERLAY="${K8S_DIR}/prod"
@@ -317,27 +330,7 @@ pipeline {
             kubectl -n "$NS" set image deployment/product-service product-service="$IMAGE"
             kubectl -n "$NS" rollout status deployment/product-service --timeout=180s
 
-            kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 18080:80 >/tmp/ingress-pf.log 2>&1 &
-            PF_PID=$!
-            trap 'kill $PF_PID >/dev/null 2>&1 || true' EXIT INT TERM
-
-            i=1
-            while [ $i -le 30 ]; do
-              code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/" || true)
-              if [ "$code" != "000" ]; then break; fi
-              sleep 1
-              i=$((i+1))
-            done
-
-            code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/" || true)
-            if [ "$code" = "000" ]; then
-              echo "ERROR: ingress port-forward not reachable"
-              echo "--- /tmp/ingress-pf.log ---"
-              cat /tmp/ingress-pf.log || true
-              exit 1
-            fi
-
-            curl -fsS -i -H "Host: $HOST" "http://127.0.0.1:18080/health"
+            ./deploy/ci/smoke-test-ingress.sh "$HOST" "/health"
           '''
         }
       }
@@ -362,6 +355,11 @@ pipeline {
           echo "==================================="
 
           mkdir -p artifacts || true
+
+          if [ -f infra-outputs.json ]; then
+            cp -f infra-outputs.json artifacts/infra-outputs.json || true
+          fi
+
           if [ -f /tmp/ingress-pf.log ]; then
             echo ""
             echo "---- tail /tmp/ingress-pf.log ----"
