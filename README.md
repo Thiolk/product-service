@@ -6,18 +6,15 @@ REST API for product management.
 
 ## Architecture Context
 
-This service is part of a containerized microservices-based e-commerce
-system:
+This service is part of a containerized microservices-based e-commerce system:
 
-- product-service -- Product management API (this repository)
-- order-service -- Order management API
-- ecommerce-frontend -- React frontend served via Nginx
-- database -- PostgreSQL
+- **product-service** — Product management API (this repository)
+- **order-service** — Order management API
+- **ecommerce-frontend** — React frontend served via Nginx
+- **database** — PostgreSQL
 
-Each service is versioned, containerized, built independently, and
-deployed via Kubernetes.\
-CI/CD is implemented using a Jenkins Multibranch Pipeline with
-environment-aware deployments.
+Each service is versioned, containerized, independently buildable/deployable, and deployed via Kubernetes.
+CI/CD is implemented using **Jenkins Multibranch Pipelines** with environment-aware deployments.
 
 ---
 
@@ -29,19 +26,21 @@ environment-aware deployments.
 
 ## Versioning
 
-This service follows Semantic Versioning (SemVer):
+This service follows **Semantic Versioning (SemVer)**:
 
 MAJOR.MINOR.PATCH
 
-- MAJOR: breaking API changes
-- MINOR: new features (backwards compatible)
-- PATCH: bug fixes
+- **MAJOR**: breaking API changes
+- **MINOR**: new features (backwards compatible)
+- **PATCH**: bug fixes
 
-Production releases are triggered via Git tags (e.g., v2.0.0).
+Production releases are triggered via Git tags (e.g., `v2.0.0`).
 
 ---
 
 ## Prerequisites
+
+### Local tooling
 
 - Docker
 - Docker Compose
@@ -49,6 +48,10 @@ Production releases are triggered via Git tags (e.g., v2.0.0).
 - Kubernetes (Minikube for local cluster testing)
 - kubectl
 - Jenkins (for CI/CD)
+
+### CI/CD + Terraform (Infra outputs)
+
+This repo’s Jenkins pipeline can consume **Terraform outputs** produced by the infrastructure pipeline so that deployments remain consistent across environments.
 
 ---
 
@@ -64,35 +67,27 @@ deploy/docker/
 
 ### 1) Create your local environment file
 
-```bash
 cp deploy/docker/.env.example deploy/docker/.env
-```
 
 ### 2) Build and run
 
-```bash
 docker compose -f deploy/docker/docker-compose.yml --env-file deploy/docker/.env up -d --build
 docker ps
-```
 
 ### 3) Verify
 
-```bash
 curl -i http://localhost:5000/health
-```
 
 ### 4) Stop
 
-```bash
 docker compose -f deploy/docker/docker-compose.yml --env-file deploy/docker/.env down
-```
 
 ---
 
 ## Ports
 
-- Container port: 3000
-- Docker Compose host port: 5000
+- Container port: **3000**
+- Docker Compose host port: **5000**
 
 Health check endpoint:
 
@@ -104,35 +99,28 @@ http://localhost:5000/health
 
 ### Install dependencies
 
-```bash
 npm ci
-```
 
 ### Run locally
 
-```bash
 npm run dev
-```
 
 ### Run tests
 
-```bash
 npm run test:unit
 npm run test:integration
-```
 
 ---
 
 ## Kubernetes Deployment
 
-Kubernetes manifests are structured using Kustomize.
+Kubernetes manifests are structured using **Kustomize**.
 
-k8s/product-service/\
-base/\
-overlays/\
-dev/\
-staging/\
-prod/
+k8s/product-service/
+- base/
+- overlays/dev/
+- overlays/staging/
+- overlays/prod/
 
 ### Namespaces
 
@@ -142,11 +130,9 @@ prod/
 
 Create namespaces:
 
-```bash
 kubectl create namespace dev
 kubectl create namespace staging
 kubectl create namespace prod
-```
 
 ### Deployment Strategy
 
@@ -160,49 +146,102 @@ kubectl create namespace prod
 
 ### Apply Overlay (Example: Dev)
 
-```bash
 kubectl kustomize k8s/product-service/overlays/dev | kubectl -n dev apply -f -
-```
 
 ### Smoke Test (Ingress via Port Forward)
 
-```bash
 kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 18080:80
 curl -H "Host: product-dev.local" http://127.0.0.1:18080/health
-```
 
 ---
 
 ## CI/CD Pipeline (Jenkins)
 
-This service uses a Jenkins Multibranch Pipeline with environment-aware
-deployment.
+This service uses a **Jenkins Multibranch Pipeline** with environment-aware deployment.
 
-### Branch Strategy
+### Branch / Trigger Strategy
 
-- feature/\* → Validation only (lint, tests, SonarQube, Docker build,
-  security scan)
-- develop → Deploy to DEV namespace
-- release/\* → Staging candidate validation only
-- main → Deploy to STAGING namespace
-- git tag (vX.Y.Z) → Deploy to PROD (manual approval required)
+- feature/* → Validation only (lint/tests/SonarQube/Docker build/security scan), **no deploy**
+- develop → Deploy to **DEV** namespace
+- release/* → Release-candidate validation only (**no deploy**)
+- main → Deploy to **STAGING** namespace
+- Git tag `vX.Y.Z` → Deploy to **PROD** (manual approval required)
+
+### Optional Pipeline Overrides
+
+Some pipelines support parameters for controlled testing:
+
+- FORCE_ENV → auto | build | rc | dev | staging | prod
+- FORCE_IMAGE_TAG → override computed image tag
+
+This allows testing deployments safely without merging branches.
 
 ### Image Tagging Strategy
 
-- dev-`<BUILD_NUMBER>`{=html}
-- staging-`<BUILD_NUMBER>`{=html}
+- dev-<BUILD_NUMBER>
+- staging-<BUILD_NUMBER>
 - vX.Y.Z (production)
 - latest (production only)
 
-### Deployment Flow
+---
 
-1.  Build container image
-2.  Run Docker Scout security scan (notify-only policy)
-3.  Push image to Docker Hub
-4.  Apply Kubernetes overlay for environment
-5.  Inject image tag via kubectl set image
-6.  Wait for rollout
-7.  Run smoke test against /health endpoint
+## Terraform Outputs Integration
+
+The Jenkins pipeline retrieves infrastructure outputs generated by the Terraform pipeline.
+
+Expected artifacts:
+
+- infra-outputs.json
+- infra-outputs-dev.json
+- infra-outputs-staging.json
+- infra-outputs-prod.json
+
+The service pipeline:
+
+1. Downloads outputs from the Terraform job
+2. Prefers env-specific outputs
+3. Falls back to infra-outputs.json
+4. Loads variables via deploy/ci/load-infra-outputs.sh
+
+Variables exported include:
+
+- KUBE_CONTEXT
+- INGRESS_NS
+- INGRESS_SVC
+
+---
+
+## Deployment Flow
+
+1. Build container image
+2. Run Docker Scout security scan (notify-only policy)
+3. Push image to Docker Hub
+4. Retrieve Terraform infrastructure outputs
+5. Apply Kubernetes overlay for environment
+6. Inject image tag via kubectl set image
+7. Wait for rollout completion
+8. Run ingress smoke test against /health
+
+---
+
+## CI Helper Scripts
+
+Reusable CI scripts are located in:
+
+deploy/ci/
+
+Important scripts:
+
+- deploy/ci/load-infra-outputs.sh
+- deploy/ci/smoke-test-ingress.sh
+
+Example local usage:
+
+chmod +x deploy/ci/load-infra-outputs.sh deploy/ci/smoke-test-ingress.sh
+eval "$(./deploy/ci/load-infra-outputs.sh)"
+
+kubectl config use-context "$KUBE_CONTEXT"
+./deploy/ci/smoke-test-ingress.sh "product-dev.local" "/health"
 
 ---
 
@@ -210,7 +249,7 @@ deployment.
 
 - Unit tests: validate business logic
 - Integration tests: validate API routes
-- Smoke tests: validate container boot and K8s deployment health
+- Smoke tests: validate container startup and Kubernetes deployment health
 
 All tests must pass before image push.
 
@@ -218,21 +257,20 @@ All tests must pass before image push.
 
 ## Security Scanning (Docker Scout)
 
-The container image is scanned for known vulnerabilities using Docker
-Scout.
+The container image is scanned using **Docker Scout**.
 
 Policy:
 
 - Notify-only
-- Critical and High severity issues reported
-- Pipeline does NOT fail for upstream base image vulnerabilities
+- Critical and High severity vulnerabilities reported
+- Pipeline does NOT fail for upstream base image issues
 
-We mitigate risk by:
+Mitigation approach:
 
-- Using official base images
-- Keeping runtime image minimal
-- Updating dependencies regularly
-- Rescanning after rebuilds
+- Use official base images
+- Keep runtime images minimal
+- Update dependencies regularly
+- Rebuild and rescan images periodically
 
 ---
 
@@ -240,7 +278,7 @@ We mitigate risk by:
 
 Supported variables:
 
-- PORT (default: 3000)
+PORT (default: 3000)
 
 If database integration is enabled:
 
@@ -254,7 +292,10 @@ If database integration is enabled:
 
 ## Maintainer Notes
 
-- Kubernetes overlays control image tags per environment.
-- Jenkins injects the build-specific image tag during deployment.
-- Production deploys require manual approval.
-- Ingress host-based routing is used per environment.
+- Kubernetes overlays control environment-specific configuration.
+- Jenkins injects build-specific image tags during deployment.
+- Production deployments require manual approval.
+- Ingress host-based routing is used per environment:
+  - product-dev.local
+  - product-staging.local
+  - product-prod.local
