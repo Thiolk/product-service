@@ -239,64 +239,6 @@ pipeline {
       }
     }
 
-    stage('Deploy (Dev)') {
-      when { expression { return env.TARGET_ENV == "dev" } }
-      steps {
-        withCredentials([file(credentialsId: 'kubeconfig-minikube', variable: 'KUBECONFIG_FILE')]) {
-          sh '''
-            set -eux
-            export KUBECONFIG="$KUBECONFIG_FILE"
-
-            # Load ingress/controller details from Terraform outputs (infra-outputs.json)
-            chmod +x deploy/ci/load-infra-outputs.sh deploy/ci/smoke-test-ingress.sh
-            eval "$(./deploy/ci/load-infra-outputs.sh)"
-
-            # Use kube context from outputs (usually "minikube")
-            kubectl config use-context "$KUBE_CONTEXT"
-
-            NS=dev
-            HOST="product-dev.local"
-            OVERLAY="${K8S_DIR}/dev"
-            IMAGE="${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
-
-            kubectl kustomize "$OVERLAY" | kubectl -n "$NS" apply -f -
-            kubectl -n "$NS" set image deployment/product-service product-service="$IMAGE"
-            kubectl -n "$NS" rollout status deployment/product-service --timeout=180s
-
-            # Smoke test (reuses your existing port-forward logic, now parameterized)
-            ./deploy/ci/smoke-test-ingress.sh "$HOST" "/health"
-          '''
-        }
-      }
-    }
-
-    stage('Deploy (Staging)') {
-      when { expression { return env.TARGET_ENV == "staging" } }
-      steps {
-        withCredentials([file(credentialsId: 'kubeconfig-minikube', variable: 'KUBECONFIG_FILE')]) {
-          sh '''
-            set -eux
-            export KUBECONFIG="$KUBECONFIG_FILE"
-
-            chmod +x deploy/ci/load-infra-outputs.sh deploy/ci/smoke-test-ingress.sh
-            eval "$(./deploy/ci/load-infra-outputs.sh)"
-            kubectl config use-context "$KUBE_CONTEXT"
-
-            NS=staging
-            HOST="product-staging.local"
-            OVERLAY="${K8S_DIR}/staging"
-            IMAGE="${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
-
-            kubectl kustomize "$OVERLAY" | kubectl -n "$NS" apply -f -
-            kubectl -n "$NS" set image deployment/product-service product-service="$IMAGE"
-            kubectl -n "$NS" rollout status deployment/product-service --timeout=180s
-
-            ./deploy/ci/smoke-test-ingress.sh "$HOST" "/health"
-          '''
-        }
-      }
-    }
-
     stage('Prod Eligibility Check (tag must be on main)') {
       when { expression { return env.TARGET_ENV == "prod" } }
       steps {
@@ -328,22 +270,31 @@ pipeline {
       }
     }
 
-    stage('Deploy (Prod)') {
-      when { expression { return env.TARGET_ENV == "prod" } }
+    stage('Deploy + Smoke Test (Dev/Staging/Prod)') {
+      when { expression { return env.TARGET_ENV in ["dev","staging","prod"] } }
       steps {
         withCredentials([file(credentialsId: 'kubeconfig-minikube', variable: 'KUBECONFIG_FILE')]) {
           sh '''
             set -eux
             export KUBECONFIG="$KUBECONFIG_FILE"
 
+            # Load infra outputs (context + ingress svc/ns)
             chmod +x deploy/ci/load-infra-outputs.sh deploy/ci/smoke-test-ingress.sh
             eval "$(./deploy/ci/load-infra-outputs.sh)"
+
+            # Use kube context from outputs
             kubectl config use-context "$KUBE_CONTEXT"
 
-            NS=prod
-            HOST="product-prod.local"
-            OVERLAY="${K8S_DIR}/prod"
+            NS="${TARGET_ENV}"
+            HOST="product-${TARGET_ENV}.local"
+            OVERLAY="${K8S_DIR}/${TARGET_ENV}"
             IMAGE="${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+            echo "Deploying product-service:"
+            echo "  NS=$NS"
+            echo "  HOST=$HOST"
+            echo "  OVERLAY=$OVERLAY"
+            echo "  IMAGE=$IMAGE"
 
             kubectl kustomize "$OVERLAY" | kubectl -n "$NS" apply -f -
             kubectl -n "$NS" set image deployment/product-service product-service="$IMAGE"
