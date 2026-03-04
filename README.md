@@ -117,6 +117,7 @@ npm run test:integration
 Kubernetes manifests are structured using **Kustomize**.
 
 k8s/product-service/
+
 - base/
 - overlays/dev/
 - overlays/staging/
@@ -161,9 +162,9 @@ This service uses a **Jenkins Multibranch Pipeline** with environment-aware depl
 
 ### Branch / Trigger Strategy
 
-- feature/* → Validation only (lint/tests/SonarQube/Docker build/security scan), **no deploy**
+- feature/\* → Validation only (lint/tests/SonarQube/Docker build/security scan), **no deploy**
 - develop → Deploy to **DEV** namespace
-- release/* → Release-candidate validation only (**no deploy**)
+- release/\* → Release-candidate validation only (**no deploy**)
 - main → Deploy to **STAGING** namespace
 - Git tag `vX.Y.Z` → Deploy to **PROD** (manual approval required)
 
