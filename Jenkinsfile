@@ -22,7 +22,7 @@ pipeline {
     DOCKERFILE_PATH  = "deploy/docker/Dockerfile"
 
     K8S_DIR = "k8s/product-service/overlays"
-    INFRA_JOB = "terraform-infra"
+    INFRA_JOB = "terraform-infra/main"
     INFRA_OUTPUTS_GENERIC = "infra-outputs.json"
   }
 
