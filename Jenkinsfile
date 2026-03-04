@@ -249,7 +249,7 @@ pipeline {
 
             # Load ingress/controller details from Terraform outputs (infra-outputs.json)
             chmod +x deploy/ci/load-infra-outputs.sh deploy/ci/smoke-test-ingress.sh
-            ./deploy/ci/load-infra-outputs.sh
+            source <(./deploy/ci/load-infra-outputs.sh)
 
             # Use kube context from outputs (usually "minikube")
             kubectl config use-context "$KUBE_CONTEXT"
@@ -279,7 +279,7 @@ pipeline {
             export KUBECONFIG="$KUBECONFIG_FILE"
 
             chmod +x deploy/ci/load-infra-outputs.sh deploy/ci/smoke-test-ingress.sh
-            ./deploy/ci/load-infra-outputs.sh
+            source <(./deploy/ci/load-infra-outputs.sh)
             kubectl config use-context "$KUBE_CONTEXT"
 
             NS=staging
@@ -337,7 +337,7 @@ pipeline {
             export KUBECONFIG="$KUBECONFIG_FILE"
 
             chmod +x deploy/ci/load-infra-outputs.sh deploy/ci/smoke-test-ingress.sh
-            ./deploy/ci/load-infra-outputs.sh
+            source <(./deploy/ci/load-infra-outputs.sh)
             kubectl config use-context "$KUBE_CONTEXT"
 
             NS=prod
