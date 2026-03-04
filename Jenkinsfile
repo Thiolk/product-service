@@ -206,34 +206,34 @@ pipeline {
       when { expression { return env.TARGET_ENV in ["dev","staging","prod"] } }
       steps {
         script {
+          def infraJob = env.INFRA_JOB
+
           def envFile = "infra-outputs-${env.TARGET_ENV}.json"
+          def genericFile = "infra-outputs.json"
+
+          // clean any leftovers
           sh 'rm -f infra-outputs*.json || true'
 
-          try {
-            copyArtifacts(
-              projectName: env.INFRA_JOB,
-              selector: lastSuccessful(),
-              filter: "${envFile},${env.INFRA_OUTPUTS_GENERIC}",
-              fingerprintArtifacts: true,
-              optional: false
-            )
-          } catch (err) {
-            error("""
-                  Could not copy artifacts from infra job '${env.INFRA_JOB}'.
-                  - Ensure the job exists and archives infra-outputs.json (and preferably infra-outputs-${env.TARGET_ENV}.json).
-                  - Ensure the "Copy Artifact" plugin is installed.
-                  Original error: ${err}
-                  """)
-          }
+          // Copy BOTH if available
+          copyArtifacts(
+            projectName: infraJob,
+            selector: lastSuccessful(),
+            filter: "${envFile},${genericFile}",
+            fingerprintArtifacts: true
+          )
 
+          // Prefer env-specific, fallback to generic
           sh """
             set -eux
             if [ -f "${envFile}" ]; then
               cp "${envFile}" infra-outputs.json
+              echo "Using env-specific outputs: ${envFile}"
+            elif [ -f "${genericFile}" ]; then
+              echo "Using generic outputs: ${genericFile}"
+            else
+              echo "ERROR: No infra outputs found. Expected ${envFile} or ${genericFile}"
+              exit 1
             fi
-            test -f infra-outputs.json
-            echo "Using infra outputs:"
-            ls -la infra-outputs.json
           """
         }
       }
