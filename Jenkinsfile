@@ -39,12 +39,6 @@ pipeline {
             env.TARGET_ENV = "build"            // feature/* or other branches
           }
 
-          def forced = (params.FORCE_ENV ?: 'auto').trim()
-          if (forced && forced != 'auto') {
-            env.TARGET_ENV = forced
-            echo "FORCE_ENV override applied -> TARGET_ENV=${env.TARGET_ENV}"
-          }
-
           echo "BRANCH_NAME: ${branch}"
           echo "TAG_NAME: ${tagName ?: 'none'}"
           echo "TARGET_ENV: ${env.TARGET_ENV}"
@@ -62,7 +56,7 @@ pipeline {
     }
 
     stage('Build (Lint/Format)') {
-      when { expression { env.TARGET_ENV == "build" } }
+      when { expression { env.TARGET_ENV in ["build", "rc"] } }
       steps {
         sh '''
           set -eux
@@ -73,6 +67,7 @@ pipeline {
     }
 
     stage('Test (Unit)') {
+      when { expression { env.TARGET_ENV in ["build", "rc"] } }
       steps {
         sh '''
           set -eux
