@@ -39,12 +39,6 @@ pipeline {
             env.TARGET_ENV = "build"            // feature/* or other branches
           }
 
-          def forced = (params.FORCE_ENV ?: 'auto').trim()
-          if (forced && forced != 'auto') {
-            env.TARGET_ENV = forced
-            echo "FORCE_ENV override applied -> TARGET_ENV=${env.TARGET_ENV}"
-          }
-
           echo "BRANCH_NAME: ${branch}"
           echo "TAG_NAME: ${tagName ?: 'none'}"
           echo "TARGET_ENV: ${env.TARGET_ENV}"
@@ -62,7 +56,7 @@ pipeline {
     }
 
     stage('Build (Lint/Format)') {
-      when { expression { env.TARGET_ENV == "build" } }
+      when { expression { env.TARGET_ENV in ["build", "rc"] } }
       steps {
         sh '''
           set -eux
@@ -73,6 +67,7 @@ pipeline {
     }
 
     stage('Test (Unit)') {
+      when { expression { env.TARGET_ENV in ["build", "rc"] } }
       steps {
         sh '''
           set -eux
@@ -140,6 +135,40 @@ pipeline {
           echo "  IMAGE_TAG   = ${env.IMAGE_TAG}"
           echo "  RELEASE_TAG = ${releaseTag ?: 'none'}"
           echo "  BUILD_NUMBER= ${env.BUILD_NUMBER}"
+        }
+      }
+    }
+
+    stage('Infrastructure Validation') {
+      steps {
+        withCredentials([file(credentialsId: 'kubeconfig-minikube', variable: 'KUBECONFIG_FILE')]) {
+          sh '''
+            set -eux
+            export KUBECONFIG="$KUBECONFIG_FILE"
+
+            mkdir -p artifacts
+
+            validate_overlay() {
+              OVERLAY="$1"
+              NAME="$2"
+
+              echo "Validating overlay: $NAME ($OVERLAY)"
+
+              echo "--- kubectl kustomize: $OVERLAY ---"
+              kubectl kustomize "$OVERLAY" | tee "artifacts/kustomize-${NAME}.yaml" >/dev/null
+
+              echo "--- kubectl dry-run apply: $OVERLAY ---"
+              kubectl apply --dry-run=client -f "artifacts/kustomize-${NAME}.yaml" | tee "artifacts/dryrun-${NAME}.log"
+            }
+
+            if [ "${TARGET_ENV}" = "build" ] || [ "${TARGET_ENV}" = "rc" ]; then
+              validate_overlay "${K8S_DIR}/dev" "dev"
+              validate_overlay "${K8S_DIR}/staging" "staging"
+              validate_overlay "${K8S_DIR}/prod" "prod"
+            else
+              validate_overlay "${K8S_DIR}/${TARGET_ENV}" "${TARGET_ENV}"
+            fi
+          '''
         }
       }
     }
