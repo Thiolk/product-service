@@ -1,4 +1,3 @@
-
 # Product Service
 
 REST API for product management.
@@ -21,7 +20,7 @@ CI/CD is implemented using **Jenkins Multibranch Pipelines** with environment-aw
 
 ## Version
 
-- Current release: **2.2.0**
+- Current release: **2.3.0**
 
 ---
 
@@ -164,10 +163,10 @@ kubectl create namespace prod
 Replica count:
 
 | Environment | Replicas |
-|------------|----------|
-| dev | 1 |
-| staging | 2 |
-| prod | 2 |
+| ----------- | -------- |
+| dev         | 1        |
+| staging     | 2        |
+| prod        | 2        |
 
 ### Apply Overlay (Example: Dev)
 
@@ -190,23 +189,23 @@ This service uses a **Jenkins Multibranch Pipeline** with environment-aware depl
 
 ### Branch / Trigger Strategy
 
-| Branch | Behavior |
-|------|----------|
-| feature/* | Validation only (lint/tests/SonarQube/build/security scan) |
-| develop | Deploy to **DEV** namespace |
-| release/* | Release-candidate validation only |
-| main | Deploy to **STAGING** namespace |
-| Git tag `vX.Y.Z` | Deploy to **PROD** (manual approval required) |
+| Branch           | Behavior                                                   |
+| ---------------- | ---------------------------------------------------------- |
+| feature/\*       | Validation only (lint/tests/SonarQube/build/security scan) |
+| develop          | Deploy to **DEV** namespace                                |
+| release/\*       | Release-candidate validation only                          |
+| main             | Deploy to **STAGING** namespace                            |
+| Git tag `vX.Y.Z` | Deploy to **PROD** (manual approval required)              |
 
 ---
 
 ## Image Tagging Strategy
 
-| Environment | Tag Format |
-|------------|------------|
-| dev | `dev-<BUILD_NUMBER>` |
-| staging | `staging-<BUILD_NUMBER>` |
-| prod | `vX.Y.Z` + `latest` |
+| Environment | Tag Format               |
+| ----------- | ------------------------ |
+| dev         | `dev-<BUILD_NUMBER>`     |
+| staging     | `staging-<BUILD_NUMBER>` |
+| prod        | `vX.Y.Z` + `latest`      |
 
 ---
 
