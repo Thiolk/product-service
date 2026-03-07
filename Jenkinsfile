@@ -152,9 +152,7 @@ pipeline {
               OVERLAY="$1"
               NAME="$2"
 
-              echo "======================================"
               echo "Validating overlay: $NAME ($OVERLAY)"
-              echo "======================================"
 
               echo "--- kubectl kustomize: $OVERLAY ---"
               kubectl kustomize "$OVERLAY" | tee "artifacts/kustomize-${NAME}.yaml" >/dev/null
