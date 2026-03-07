@@ -1,6 +1,19 @@
 pipeline {
   agent any
 
+  parameters {
+    choice(
+      name: 'FORCE_ENV',
+      choices: ['auto', 'build', 'rc', 'dev', 'staging', 'prod'],
+      description: 'Override pipeline mode for testing. auto = use branch/tag logic.'
+    )
+    string(
+      name: 'FORCE_IMAGE_TAG',
+      defaultValue: '',
+      description: 'Optional. If set, use this exact image tag instead of resolving from env/build number/tag.'
+    )
+  }
+
   environment {
     PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
@@ -9,6 +22,8 @@ pipeline {
     DOCKERFILE_PATH  = "deploy/docker/Dockerfile"
 
     K8S_DIR = "k8s/product-service/overlays"
+    INFRA_JOB = "terraform-infra/main"
+    INFRA_OUTPUTS_GENERIC = "infra-outputs.json"
   }
 
   stages {
@@ -36,7 +51,13 @@ pipeline {
           } else {
             env.TARGET_ENV = "build"            // feature/* or other branches
           }
-          
+
+          def forced = (params.FORCE_ENV ?: 'auto').trim()
+          if (forced && forced != 'auto') {
+            env.TARGET_ENV = forced
+            echo "FORCE_ENV override applied -> TARGET_ENV=${env.TARGET_ENV}"
+          }
+
           echo "BRANCH_NAME: ${branch}"
           echo "TAG_NAME: ${tagName ?: 'none'}"
           echo "TARGET_ENV: ${env.TARGET_ENV}"
@@ -164,7 +185,6 @@ pipeline {
       }
     }
 
-    // IMPORTANT: Match order-service gating (no pushes for rc/build)
     stage('Container Push') {
       when { expression { return env.TARGET_ENV in ["dev","staging","prod"] } }
       steps {
@@ -182,89 +202,39 @@ pipeline {
       }
     }
 
-    stage('Deploy (Dev)') {
-      when { expression { return env.TARGET_ENV == "dev" } }
+    stage('Fetch Infra Outputs (Terraform)') {
+      when { expression { return env.TARGET_ENV in ["dev","staging","prod"] } }
       steps {
-        withCredentials([file(credentialsId: 'kubeconfig-minikube', variable: 'KUBECONFIG_FILE')]) {
-          sh '''
+        script {
+          def infraJob = env.INFRA_JOB
+
+          def envFile = "infra-outputs-${env.TARGET_ENV}.json"
+          def genericFile = "infra-outputs.json"
+
+          // clean any leftovers
+          sh 'rm -f infra-outputs*.json || true'
+
+          // Copy BOTH if available
+          copyArtifacts(
+            projectName: infraJob,
+            selector: lastSuccessful(),
+            filter: "${envFile},${genericFile}",
+            fingerprintArtifacts: true
+          )
+
+          // Prefer env-specific, fallback to generic
+          sh """
             set -eux
-            export KUBECONFIG="$KUBECONFIG_FILE"
-
-            NS=dev
-            HOST="product-dev.local"
-            OVERLAY="${K8S_DIR}/dev"
-            IMAGE="${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
-
-            kubectl kustomize "$OVERLAY" | kubectl -n "$NS" apply -f -
-            kubectl -n "$NS" set image deployment/product-service product-service="$IMAGE"
-            kubectl -n "$NS" rollout status deployment/product-service --timeout=180s
-
-            # --- Smoke test via ingress using kubectl port-forward ---
-            kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 18080:80 >/tmp/ingress-pf.log 2>&1 &
-            PF_PID=$!
-            trap 'kill $PF_PID >/dev/null 2>&1 || true' EXIT INT TERM
-
-            i=1
-            while [ $i -le 30 ]; do
-              code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/" || true)
-              if [ "$code" != "000" ]; then break; fi
-              sleep 1
-              i=$((i+1))
-            done
-
-            code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/" || true)
-            if [ "$code" = "000" ]; then
-              echo "ERROR: ingress port-forward not reachable"
-              echo "--- /tmp/ingress-pf.log ---"
-              cat /tmp/ingress-pf.log || true
+            if [ -f "${envFile}" ]; then
+              cp "${envFile}" infra-outputs.json
+              echo "Using env-specific outputs: ${envFile}"
+            elif [ -f "${genericFile}" ]; then
+              echo "Using generic outputs: ${genericFile}"
+            else
+              echo "ERROR: No infra outputs found. Expected ${envFile} or ${genericFile}"
               exit 1
             fi
-
-            curl -fsS -i -H "Host: $HOST" "http://127.0.0.1:18080/health"
-          '''
-        }
-      }
-    }
-
-    stage('Deploy (Staging)') {
-      when { expression { return env.TARGET_ENV == "staging" } }
-      steps {
-        withCredentials([file(credentialsId: 'kubeconfig-minikube', variable: 'KUBECONFIG_FILE')]) {
-          sh '''
-            set -eux
-            export KUBECONFIG="$KUBECONFIG_FILE"
-
-            NS=staging
-            HOST="product-staging.local"
-            OVERLAY="${K8S_DIR}/staging"
-            IMAGE="${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
-
-            kubectl kustomize "$OVERLAY" | kubectl -n "$NS" apply -f -
-            kubectl -n "$NS" set image deployment/product-service product-service="$IMAGE"
-            kubectl -n "$NS" rollout status deployment/product-service --timeout=180s
-
-            kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 18080:80 >/tmp/ingress-pf.log 2>&1 &
-            PF_PID=$!
-            trap 'kill $PF_PID >/dev/null 2>&1 || true' EXIT INT TERM
-
-            i=1
-            while [ $i -le 30 ]; do
-              code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/" || true)
-              if [ "$code" != "000" ]; then break; fi
-              sleep 1
-              i=$((i+1))
-            done
-
-            code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/" || true)
-            if [ "$code" = "000" ]; then
-              echo "ERROR: ingress port-forward not reachable"
-              echo "--- /tmp/ingress-pf.log ---"
-              cat /tmp/ingress-pf.log || true
-              exit 1
-            fi
-
-            curl -fsS -i -H "Host: $HOST" "http://127.0.0.1:18080/health"
-          '''
+          """
         }
       }
     }
@@ -300,44 +270,37 @@ pipeline {
       }
     }
 
-    stage('Deploy (Prod)') {
-      when { expression { return env.TARGET_ENV == "prod" } }
+    stage('Deploy + Smoke Test (Dev/Staging/Prod)') {
+      when { expression { return env.TARGET_ENV in ["dev","staging","prod"] } }
       steps {
         withCredentials([file(credentialsId: 'kubeconfig-minikube', variable: 'KUBECONFIG_FILE')]) {
           sh '''
             set -eux
             export KUBECONFIG="$KUBECONFIG_FILE"
 
-            NS=prod
-            HOST="product-prod.local"
-            OVERLAY="${K8S_DIR}/prod"
+            # Load infra outputs (context + ingress svc/ns)
+            chmod +x deploy/ci/load-infra-outputs.sh deploy/ci/smoke-test-ingress.sh
+            eval "$(./deploy/ci/load-infra-outputs.sh)"
+
+            # Use kube context from outputs
+            kubectl config use-context "$KUBE_CONTEXT"
+
+            NS="${TARGET_ENV}"
+            HOST="product-${TARGET_ENV}.local"
+            OVERLAY="${K8S_DIR}/${TARGET_ENV}"
             IMAGE="${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+            echo "Deploying product-service:"
+            echo "  NS=$NS"
+            echo "  HOST=$HOST"
+            echo "  OVERLAY=$OVERLAY"
+            echo "  IMAGE=$IMAGE"
 
             kubectl kustomize "$OVERLAY" | kubectl -n "$NS" apply -f -
             kubectl -n "$NS" set image deployment/product-service product-service="$IMAGE"
             kubectl -n "$NS" rollout status deployment/product-service --timeout=180s
 
-            kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 18080:80 >/tmp/ingress-pf.log 2>&1 &
-            PF_PID=$!
-            trap 'kill $PF_PID >/dev/null 2>&1 || true' EXIT INT TERM
-
-            i=1
-            while [ $i -le 30 ]; do
-              code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/" || true)
-              if [ "$code" != "000" ]; then break; fi
-              sleep 1
-              i=$((i+1))
-            done
-
-            code=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/" || true)
-            if [ "$code" = "000" ]; then
-              echo "ERROR: ingress port-forward not reachable"
-              echo "--- /tmp/ingress-pf.log ---"
-              cat /tmp/ingress-pf.log || true
-              exit 1
-            fi
-
-            curl -fsS -i -H "Host: $HOST" "http://127.0.0.1:18080/health"
+            ./deploy/ci/smoke-test-ingress.sh "$HOST" "/health"
           '''
         }
       }
@@ -362,6 +325,11 @@ pipeline {
           echo "==================================="
 
           mkdir -p artifacts || true
+
+          if [ -f infra-outputs.json ]; then
+            cp -f infra-outputs.json artifacts/infra-outputs.json || true
+          fi
+
           if [ -f /tmp/ingress-pf.log ]; then
             echo ""
             echo "---- tail /tmp/ingress-pf.log ----"
