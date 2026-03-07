@@ -1,19 +1,6 @@
 pipeline {
   agent any
 
-  parameters {
-    choice(
-      name: 'FORCE_ENV',
-      choices: ['auto', 'build', 'rc', 'dev', 'staging', 'prod'],
-      description: 'Override pipeline mode for testing. auto = use branch/tag logic.'
-    )
-    string(
-      name: 'FORCE_IMAGE_TAG',
-      defaultValue: '',
-      description: 'Optional. If set, use this exact image tag instead of resolving from env/build number/tag.'
-    )
-  }
-
   environment {
     PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
